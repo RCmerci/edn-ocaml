@@ -17,8 +17,6 @@ type t =
 
 exception Parse_error of string
 
-let parse_error message = raise (Parse_error message)
-
 module Parser = struct
   type parser = { source : string; mutable pos : int; len : int }
 
@@ -29,9 +27,12 @@ module Parser = struct
   let peek parser =
     if is_eof parser then None else Some parser.source.[parser.pos]
 
+  let parse_error parser message =
+    raise (Parse_error (Printf.sprintf "at position %d: %s" parser.pos message))
+
   let next parser =
     match peek parser with
-    | None -> parse_error "unexpected end of input"
+    | None -> parse_error parser "unexpected end of input"
     | Some ch ->
         parser.pos <- parser.pos + 1;
         ch
@@ -64,7 +65,7 @@ module Parser = struct
     | _ -> false
 
   let read_hex4 parser =
-    if parser.pos + 4 > parser.len then parse_error "incomplete unicode escape";
+    if parser.pos + 4 > parser.len then parse_error parser "incomplete unicode escape";
     let code = ref 0 in
     for _ = 1 to 4 do
       let ch = next parser in
@@ -73,13 +74,13 @@ module Parser = struct
         | '0' .. '9' -> Char.code ch - Char.code '0'
         | 'a' .. 'f' -> 10 + Char.code ch - Char.code 'a'
         | 'A' .. 'F' -> 10 + Char.code ch - Char.code 'A'
-        | _ -> parse_error "invalid unicode escape"
+        | _ -> parse_error parser "invalid unicode escape"
       in
       code := (!code * 16) + digit
     done;
     match Uchar.of_int !code with
     | uchar -> uchar
-    | exception Invalid_argument _ -> parse_error "invalid unicode scalar"
+    | exception Invalid_argument _ -> parse_error parser "invalid unicode scalar"
 
   let read_string parser =
     let buffer = Buffer.create 32 in
@@ -106,7 +107,7 @@ module Parser = struct
           | 'u' ->
               Buffer.add_utf_8_uchar buffer (read_hex4 parser);
               loop ()
-          | ch -> parse_error (Printf.sprintf "unsupported string escape: \\%c" ch))
+          | ch -> parse_error parser (Printf.sprintf "unsupported string escape: \\%c" ch))
       | ch ->
           Buffer.add_char buffer ch;
           loop ()
@@ -154,9 +155,9 @@ module Parser = struct
     else if full_match integer_re token then Some (Int (Int64.of_string token))
     else None
 
-  let parse_token token =
+  let parse_token parser token =
     match token with
-    | "" -> parse_error "expected token"
+    | "" -> parse_error parser "expected token"
     | "nil" -> Nil
     | "true" -> Bool true
     | "false" -> Bool false
@@ -165,14 +166,14 @@ module Parser = struct
         | Some value -> value
         | None when String.length token > 0 && token.[0] = ':' ->
             if String.length token = 1 || (String.length token > 1 && token.[1] = ':') then
-              parse_error ("invalid keyword: " ^ token)
+              parse_error parser ("invalid keyword: " ^ token)
             else Keyword (String.sub token 1 (String.length token - 1))
         | None -> Symbol token)
 
   let read_char parser =
     let token = read_token parser in
     match token with
-    | "" -> parse_error "missing character literal"
+    | "" -> parse_error parser "missing character literal"
     | "newline" -> Char (Uchar.of_char '\n')
     | "return" -> Char (Uchar.of_char '\r')
     | "space" -> Char (Uchar.of_char ' ')
@@ -181,12 +182,12 @@ module Parser = struct
         let char_parser = create (String.sub token 1 4) in
         Char (read_hex4 char_parser)
     | _ when String.length token = 1 -> Char (Uchar.of_char token.[0])
-    | _ -> parse_error ("invalid character literal: \\" ^ token)
+    | _ -> parse_error parser ("invalid character literal: \\" ^ token)
 
   let rec read_required parser =
     match read_value parser with
     | Some value -> value
-    | None -> parse_error "expected EDN value"
+    | None -> parse_error parser "expected EDN value"
 
   and read_value parser =
     skip_ws parser;
@@ -211,7 +212,7 @@ module Parser = struct
     | Some '#' ->
         ignore (next parser);
         read_dispatch parser
-    | Some _ -> Some (parse_token (read_token parser))
+    | Some _ -> Some (parse_token parser (read_token parser))
 
   and read_sequence parser closing =
     let rec loop acc =
@@ -220,7 +221,9 @@ module Parser = struct
       | Some ch when ch = closing ->
           ignore (next parser);
           List.rev acc
-      | None -> parse_error (Printf.sprintf "missing closing %c" closing)
+      | Some (')' | ']' | '}' as ch) ->
+          parse_error parser (Printf.sprintf "unexpected closing delimiter: %c" ch)
+      | None -> parse_error parser (Printf.sprintf "missing closing %c" closing)
       | _ -> (
           match read_value parser with
           | Some value -> loop (value :: acc)
@@ -232,7 +235,7 @@ module Parser = struct
     let values = read_sequence parser '}' in
     let rec pairs acc = function
       | [] -> Map (Iarray.of_list (List.rev acc))
-      | [ _ ] -> parse_error "map requires an even number of forms"
+      | [ _ ] -> parse_error parser "map requires an even number of forms"
       | key :: value :: rest -> pairs ((key, value) :: acc) rest
     in
     pairs [] values
@@ -250,8 +253,8 @@ module Parser = struct
         let tag = read_token parser in
         let value = read_required parser in
         Some (Tagged (tag, value))
-    | Some ch -> parse_error (Printf.sprintf "unsupported dispatch: #%c" ch)
-    | None -> parse_error "missing dispatch character"
+    | Some ch -> parse_error parser (Printf.sprintf "unsupported dispatch: #%c" ch)
+    | None -> parse_error parser "missing dispatch character"
 end
 
 let of_edn_string_all source =
@@ -261,15 +264,18 @@ let of_edn_string_all source =
     | Some value -> loop (value :: acc)
     | None ->
         Parser.skip_ws parser;
-        if Parser.is_eof parser then List.rev acc else parse_error "unexpected closing delimiter"
+        if Parser.is_eof parser then List.rev acc
+        else Parser.parse_error parser "unexpected closing delimiter"
   in
   loop []
 
 let of_edn_string source =
-  match of_edn_string_all source with
-  | [ value ] -> value
-  | [] -> parse_error "expected EDN value"
-  | _ -> parse_error "expected a single EDN value"
+  let parser = Parser.create source in
+  match Parser.read_value parser with
+  | None -> Parser.parse_error parser "expected EDN value"
+  | Some value ->
+      Parser.skip_ws parser;
+      if Parser.is_eof parser then value else Parser.parse_error parser "expected a single EDN value"
 
 let escape_string value =
   let buffer = Buffer.create (String.length value + 8) in

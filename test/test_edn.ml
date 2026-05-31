@@ -47,6 +47,12 @@ let check_raises name f =
   | exception exn -> failf "%s\nunexpected exception: %s" name (Printexc.to_string exn)
   | _ -> failf "%s\nexpected an exception" name
 
+let check_parse_error name expected f =
+  match f () with
+  | exception Parse_error message -> check_string name expected message
+  | exception exn -> failf "%s\nunexpected exception: %s" name (Printexc.to_string exn)
+  | _ -> failf "%s\nexpected a Parse_error" name
+
 let test_parse_atoms () =
   check_value "nil" Nil (of_edn_string "nil");
   check_value "true" (Bool true) (of_edn_string "true");
@@ -149,6 +155,9 @@ let test_json_conversion () =
 let test_errors () =
   check_raises "reject trailing forms" (fun () -> ignore (of_edn_string "1 2"));
   check_raises "reject odd map entry count" (fun () -> ignore (of_edn_string "{:a 1 :b}"));
+  check_raises "reject mismatched closing delimiter" (fun () -> ignore (of_edn_string "{:a/b [1 2 3])"));
+  check_parse_error "parse error includes position" "at position 13: unexpected closing delimiter: )" (fun () ->
+      ignore (of_edn_string "{:a/b [1 2 3])"));
   check_raises "reject invalid keyword" (fun () -> ignore (of_edn_string "::bad"));
   check_raises "reject discard without value" (fun () -> ignore (of_edn_string "[1 #_]"));
   check_raises "reject non-string json object keys" (fun () ->
