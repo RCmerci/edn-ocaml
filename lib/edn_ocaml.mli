@@ -1,27 +1,36 @@
-type t =
-  | Nil
-  | Bool of bool
-  | String of string
-  | Char of Uchar.t
-  | Symbol of string
-  | Keyword of string
-  | Int of int64
-  | Bigint of string
-  | Float of float
-  | Decimal of string
-  | List of t iarray
-  | Vector of t iarray
-  | Map of (t * t) iarray
-  | Set of t iarray
-  | Tagged of string * t
+type keyword
+type symbol
+type map
+type set
+type vector
+type list_
+type number
+
+type _ t =
+  | Nil : unit t
+  | Bool : bool -> bool t
+  | String : string -> string t
+  | Char : Uchar.t -> Uchar.t t
+  | Symbol : string -> symbol t
+  | Keyword : string -> keyword t
+  | Int : int64 -> number t
+  | Bigint : string -> number t
+  | Float : float -> number t
+  | Decimal : string -> number t
+  | List : any iarray -> list_ t
+  | Vector : any iarray -> vector t
+  | Map : (any * any) iarray -> map t
+  | Set : any iarray -> set t
+  | Tagged : string * any -> (string * any) t
+
+and any = Any : _ t -> any
 
 exception Parse_error of string
 
-val of_edn_string : string -> t
-val of_edn_string_all : string -> t list
-val to_edn_string : t -> string
-
-val of_json : Yojson.Safe.t -> t
-val of_json_string : string -> t
-val to_json : t -> Yojson.Safe.t
-val to_json_string : t -> string
+val of_edn_string : string -> any
+val of_edn_string_all : string -> any list
+val to_edn_string : any -> string
+val of_json : Yojson.Safe.t -> any
+val of_json_string : string -> any
+val to_json : any -> Yojson.Safe.t
+val to_json_string : any -> string
