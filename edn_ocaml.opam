@@ -2,9 +2,10 @@
 opam-version: "2.0"
 synopsis: "EDN reader and writer for OCaml"
 depends: [
-  "dune" {>= "3.11"}
+  "dune" {>= "3.16"}
   "ocaml" {>= "5.0"}
-  "yojson"
+  "melange"
+  "melange-jest" {with-test}
   "odoc" {with-doc}
 ]
 build: [

@@ -2,5 +2,5 @@
 - spec: https://github.com/edn-format/edn
 - cljs impl: https://github.com/clojure/clojurescript/blob/r1.12.145/src/main/cljs/cljs/reader.cljs
 - features required: 
-  - read from edn-string, json-string(yojson)
+  - read from edn-string, json-string(Js.Json)
   - write to edn-string, json-string

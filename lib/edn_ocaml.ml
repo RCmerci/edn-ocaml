@@ -140,12 +140,63 @@ module Parser = struct
     in
     loop ()
 
-  let full_match pattern token =
-    Str.string_match (Str.regexp pattern) token 0
-    && Str.match_end () = String.length token
+  let is_digit = function '0' .. '9' -> true | _ -> false
+  let is_nonzero_digit = function '1' .. '9' -> true | _ -> false
 
-  let integer_re = {|[+-]?\(0\|[1-9][0-9]*\)|}
-  let float_re = {|[+-]?\(0\|[1-9][0-9]*\)\(\.[0-9]+\)?\([eE][+-]?[0-9]+\)?|}
+  let skip_sign token =
+    if String.length token > 0 && (token.[0] = '+' || token.[0] = '-') then 1
+    else 0
+
+  let consume_digits token pos =
+    let len = String.length token in
+    let rec loop pos =
+      if pos < len && is_digit token.[pos] then loop (pos + 1) else pos
+    in
+    loop pos
+
+  let consume_integer_body token pos =
+    let len = String.length token in
+    if pos >= len then None
+    else if token.[pos] = '0' then Some (pos + 1)
+    else if is_nonzero_digit token.[pos] then
+      Some (consume_digits token (pos + 1))
+    else None
+
+  let full_integer_literal token =
+    match consume_integer_body token (skip_sign token) with
+    | Some pos -> pos = String.length token
+    | None -> false
+
+  let full_float_literal token =
+    let len = String.length token in
+    match consume_integer_body token (skip_sign token) with
+    | None -> false
+    | Some integer_end -> (
+        match
+          if integer_end < len && token.[integer_end] = '.' then
+            let fraction_start = integer_end + 1 in
+            let after_digits = consume_digits token fraction_start in
+            if after_digits = fraction_start then None else Some after_digits
+          else Some integer_end
+        with
+        | None -> false
+        | Some pos -> (
+            match
+              if pos < len && (token.[pos] = 'e' || token.[pos] = 'E') then
+                let exponent_start =
+                  if
+                    pos + 1 < len
+                    && (token.[pos + 1] = '+' || token.[pos + 1] = '-')
+                  then pos + 2
+                  else pos + 1
+                in
+                let exponent_end = consume_digits token exponent_start in
+                if exponent_end = exponent_start then None
+                else Some exponent_end
+              else Some pos
+            with
+            | None -> false
+            | Some pos -> pos = len))
 
   let has_float_marker token =
     String.exists (function '.' | 'e' | 'E' -> true | _ -> false) token
@@ -162,17 +213,17 @@ module Parser = struct
     let len = String.length token in
     if len > 1 && token.[len - 1] = 'N' then
       let body = String.sub token 0 (len - 1) in
-      if full_match integer_re body then
+      if full_integer_literal body then
         Some (any (Bigint (normalize_numeric_literal body)))
       else None
     else if len > 1 && token.[len - 1] = 'M' then
       let body = String.sub token 0 (len - 1) in
-      if full_match float_re body then
+      if full_float_literal body then
         Some (any (Decimal (normalize_numeric_literal body)))
       else None
-    else if has_float_marker token && full_match float_re token then
+    else if has_float_marker token && full_float_literal token then
       Some (any (Float (float_of_string token)))
-    else if full_match integer_re token then
+    else if full_integer_literal token then
       Some (any (Int (Int64.of_string token)))
     else None
 
@@ -362,29 +413,44 @@ let rec to_edn_string (Any value) =
 and normalize_number value =
   if value = "-0" || value = "+0" then "0" else Parser.strip_leading_plus value
 
-let rec of_json = function
-  | `Null -> any Nil
-  | `Bool value -> any (Bool value)
-  | `String value -> any (String value)
-  | `Int value -> any (Int (Int64.of_int value))
-  | `Intlit value -> any (Int (Int64.of_string value))
-  | `Float value -> any (Float value)
-  | `List values -> any (Vector (Iarray.of_list (List.map of_json values)))
-  | `Assoc entries ->
+let min_safe_json_integer = -9007199254740991.
+let max_safe_json_integer = 9007199254740991.
+
+let is_safe_json_integer value =
+  value >= min_safe_json_integer
+  && value <= max_safe_json_integer
+  && value = floor value
+
+let int64_is_safe_json_integer value =
+  value >= Int64.of_float min_safe_json_integer
+  && value <= Int64.of_float max_safe_json_integer
+
+let edn_number_of_json_number value =
+  if is_safe_json_integer value then any (Int (Int64.of_float value))
+  else any (Float value)
+
+let json_number_of_int64 value =
+  if int64_is_safe_json_integer value then Js.Json.number (Int64.to_float value)
+  else Js.Json.string (Int64.to_string value)
+
+let rec of_json json =
+  match Js.Json.classify json with
+  | JSONNull -> any Nil
+  | JSONFalse -> any (Bool false)
+  | JSONTrue -> any (Bool true)
+  | JSONString value -> any (String value)
+  | JSONNumber value -> edn_number_of_json_number value
+  | JSONArray values ->
+      any (Vector (Iarray.of_list (List.map of_json (Array.to_list values))))
+  | JSONObject entries ->
       any
         (Map
            (Iarray.of_list
               (List.map
                  (fun (key, value) -> (any (String key), of_json value))
-                 entries)))
-  | `Tuple values -> any (Vector (Iarray.of_list (List.map of_json values)))
-  | `Variant (name, payload) -> (
-      match payload with
-      | None -> any (String name)
-      | Some value ->
-          any (Vector (Iarray.of_list [ any (String name); of_json value ])))
+                 (Array.to_list (Js.Dict.entries entries)))))
 
-let of_json_string source = Yojson.Safe.from_string source |> of_json
+let of_json_string source = Js.Json.parseExn source |> of_json
 
 let json_key_of_value (Any value) =
   match value with
@@ -398,29 +464,38 @@ let json_key_of_value (Any value) =
 let iarray_to_list render values =
   Iarray.fold_right (fun value acc -> render value :: acc) values []
 
-let rec to_json (Any value) =
-  match value with
-  | Nil -> `Null
-  | Bool value -> `Bool value
-  | String value -> `String value
-  | Char value -> `String (string_of_char_literal value)
-  | Symbol value -> `String value
-  | Keyword value -> `String (":" ^ value)
-  | Int value ->
-      if value <= Int64.of_int max_int && value >= Int64.of_int min_int then
-        `Int (Int64.to_int value)
-      else `Intlit (Int64.to_string value)
-  | Bigint value -> `Intlit value
-  | Float value -> `Float value
-  | Decimal value -> `String value
-  | List values | Vector values -> `List (iarray_to_list to_json values)
-  | Set values -> `List (iarray_to_list to_json values)
-  | Map entries ->
-      `Assoc
-        (iarray_to_list
-           (fun (key, value) -> (json_key_of_value key, to_json value))
-           entries)
-  | Tagged (tag, value) ->
-      `Assoc [ ("tag", `String tag); ("value", to_json value) ]
+let rec json_array values =
+  Js.Json.array (Array.of_list (iarray_to_list to_json values))
 
-let to_json_string value = Yojson.Safe.to_string (to_json value)
+and json_object entries =
+  let json = Js.Dict.empty () in
+  Iarray.iter
+    (fun (key, value) ->
+      Js.Dict.set json (json_key_of_value key) (to_json value))
+    entries;
+  Js.Json.object_ json
+
+and to_json (Any value) =
+  match value with
+  | Nil -> Js.Json.null
+  | Bool value -> Js.Json.boolean value
+  | String value -> Js.Json.string value
+  | Char value -> Js.Json.string (string_of_char_literal value)
+  | Symbol value -> Js.Json.string value
+  | Keyword value -> Js.Json.string (":" ^ value)
+  | Int value -> json_number_of_int64 value
+  | Bigint value -> Js.Json.string value
+  | Float value -> Js.Json.number value
+  | Decimal value -> Js.Json.string value
+  | List values | Vector values -> json_array values
+  | Set values -> json_array values
+  | Map entries -> json_object entries
+  | Tagged (tag, value) ->
+      json_object
+        (Iarray.of_list
+           [
+             (any (String "tag"), any (String tag));
+             (any (String "value"), value);
+           ])
+
+let to_json_string value = Js.Json.stringify (to_json value)

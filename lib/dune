@@ -1,4 +1,5 @@
 (library
  (name edn_ocaml)
  (public_name edn_ocaml)
- (libraries yojson str))
+ (modes melange)
+ (libraries melange.js))

@@ -1,3 +1,20 @@
-(test
- (name test_edn)
- (libraries edn_ocaml yojson))
+(melange.emit
+ (target edn_ocaml_melange)
+ (modules test_edn test_melange)
+ (module_systems commonjs)
+ (libraries edn_ocaml melange.js melange-jest.jest))
+
+(rule
+ (alias runtest)
+ (deps
+  (alias melange)
+  edn_ocaml_melange/test/test_edn.js
+  edn_ocaml_melange/test/test_melange.js)
+ (action
+  (chdir
+   %{workspace_root}
+   (run
+    npx
+    jest
+    --testMatch
+    **/_build/default/test/edn_ocaml_melange/test/*.js))))

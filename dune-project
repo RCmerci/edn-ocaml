@@ -1,4 +1,6 @@
-(lang dune 3.11)
+(lang dune 3.16)
+
+(using melange 0.1)
 
 (name edn_ocaml)
 
@@ -9,4 +11,5 @@
  (synopsis "EDN reader and writer for OCaml")
  (depends
   (ocaml (>= 5.0))
-  yojson))
+  melange
+  (melange-jest :with-test)))

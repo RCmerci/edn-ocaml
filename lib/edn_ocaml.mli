@@ -30,7 +30,7 @@ exception Parse_error of string
 val of_edn_string : string -> any
 val of_edn_string_all : string -> any list
 val to_edn_string : any -> string
-val of_json : Yojson.Safe.t -> any
+val of_json : Js.Json.t -> any
 val of_json_string : string -> any
-val to_json : any -> Yojson.Safe.t
+val to_json : any -> Js.Json.t
 val to_json_string : any -> string
